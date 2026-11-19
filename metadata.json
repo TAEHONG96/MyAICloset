@@ -1,0 +1,6 @@
+{
+  "name": "나만의 옷장 (My AI Closet)",
+  "description": "보유한 옷을 정리하고, 가지고 있는 아이템만으로 맞춤 코디를 추천하며, 새로운 의류 구매를 합리적으로 검토해 주는 한국어 AI 개인 옷장 어시스턴트입니다.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
