@@ -1,5 +1,6 @@
 import type {
   AiClosetDiagnosis,
+  ChatRepresentativeOutfit,
   ExtractedImageMetadata,
   OutfitIllustrationSpec,
   OutfitRecommendation,
@@ -94,6 +95,14 @@ export async function requestAssistantReply(payload: {
     includeClosetSummary: boolean;
     includePurchaseCandidate: boolean;
   };
-}): Promise<{ reply: string; citedItemIds: string[] }> {
-  return postJson<{ reply: string; citedItemIds: string[] }>('/api/wardrobe/chat', payload);
+}): Promise<{
+  reply: string;
+  citedItemIds: string[];
+  representativeOutfit?: ChatRepresentativeOutfit;
+}> {
+  return postJson<{
+    reply: string;
+    citedItemIds: string[];
+    representativeOutfit?: ChatRepresentativeOutfit;
+  }>('/api/wardrobe/chat', payload);
 }

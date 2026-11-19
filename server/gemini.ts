@@ -3,6 +3,7 @@ import path from 'node:path';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type {
   AiClosetDiagnosis,
+  ChatRepresentativeOutfit,
   ExtractedImageMetadata,
   OutfitIllustrationSpec,
   OutfitRecommendation,
@@ -25,6 +26,7 @@ import {
   normalizeThickness,
   resolveChatAttachments,
   resolveKoreanColorHex,
+  resolveRepresentativeOutfitItems,
   validateOutfitRecommendations,
 } from '../src/lib/wardrobeLogic';
 
@@ -772,7 +774,11 @@ export async function generateFashionAssistantReply(params: {
     includeClosetSummary?: boolean;
     includePurchaseCandidate?: boolean;
   };
-}): Promise<{ reply: string; citedItemIds: string[] }> {
+}): Promise<{
+  reply: string;
+  citedItemIds: string[];
+  representativeOutfit?: ChatRepresentativeOutfit;
+}> {
   const ai = getClient();
   const ownedIdSet = new Set(params.ownedItems.map((i) => i.id));
   const candidateMetaSummary = formatVisualMetadataSummary(params.purchaseCandidate.visualMeta);
@@ -833,15 +839,27 @@ ${historyLines || '(첫 질문)'}
 [사용자의 새 질문]
 ${params.message}
 
-위 보유 의류 데이터에만 근거하여 친절하고 구체적인 한국어로 답변해 주세요.
+위 보유 의류 데이터에만 근거하여 한국어로 **간단명료하게** 답변해 주세요.
+
+[답변 작성 규칙 — 반드시 준수]
 ${
   resolvedAttachments.attachedItems.length > 0 || resolvedAttachments.summaryText
-    ? '- 사용자가 이번 질문에 직접 첨부한 의류·사진·데이터를 최우선 중심으로 분석하고, 다른 보유 의류와의 매칭도 함께 제안하세요.\n'
+    ? '- 사용자가 이번 질문에 직접 첨부한 의류·사진·데이터를 최우선 중심으로 분석하고, 어울리는 보유 의류 매칭을 바로 제안하세요.\n'
     : ''
-}- 보유 목록에 없는 아이템은 절대 보유한 것처럼 말하지 마세요.
-- 필요한 경우 가정과 불확실성을 자연스럽게 밝히세요.
+}- **분량 제한**: 불필요한 인사말, 서론, 장황한 부연 설명을 모두 빼고 **핵심 결론부터 3~5줄 이내(짧은 문장 또는 불릿 2~4개, 공백 포함 250자 내외)**로 간단명료하게 작성하세요.
+- **표기 방식**: 사용자에게 보이는 reply 본문에는 '(item-01)' 같은 내부 ID 코드를 쓰지 말고 자연스러운 의류 이름만 적으세요. (ID는 citedItemIds와 representativeOutfit.itemIds 배열에만 넣으세요.)
+- 코디 추천·활용법·구매 후보 매칭 질문이라면 여러 조합을 길게 나열하지 말고 **가장 추천하는 대표 코디 1개**만 핵심 포인트로 짧게 안내하세요.
+- 보유 목록에 없는 아이템은 절대 보유한 것처럼 말하지 마세요.
 - 새 구매보다 기존 옷 활용을 우선으로 제안하세요.
-- 답변에서 실제로 언급한 보유 아이템의 ID들을 citedItemIds 배열로 함께 반환하세요.`;
+- 가정이나 불확실성(날씨, 기장, 원단 두께 등)은 필요한 경우 마지막에 1줄로 짧게만 덧붙이세요.
+- 답변에서 실제로 언급한 보유 아이템 ID는 citedItemIds 배열에 모두 담으세요.
+
+[대표 코디 1개 미리보기(representativeOutfit) 출력 규칙]
+- 질문에 대해 착장 조합을 추천하거나 기존 옷 코디를 제안할 수 있는 경우(코디 추천, 특정 옷 활용법, 구매 후보 대체 코디, 데일리/출근/모임 룩 질문 등), 가장 추천하는 **대표 코디 1개**를 골라 representativeOutfit에 담으세요.
+  - title: 짧은 코디 제목 (예: 차콜 블레이저 미니멀 출근룩)
+  - itemIds: 반드시 위 보유 의류 목록에 존재하는 실제 ID 2~5개 (가급적 상의+하의 또는 원피스 + 아우터/신발/가방 조합)
+  - stylingNote: 해당 대표 코디의 착장 포인트 1줄 (35자 이내)
+- 단순 보유 벌수/색상 통계 확인 등 착장 조합 제안과 무관한 질문일 때만 representativeOutfit.itemIds를 빈 배열 []로 반환하세요.`;
 
   const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
   for (const item of resolvedAttachments.attachedItems.slice(0, 4)) {
@@ -868,15 +886,38 @@ ${
           properties: {
             reply: {
               type: Type.STRING,
-              description: '사용자의 질문에 대한 정중하고 구체적인 한국어 답변 (단락 구분 포함)',
+              description:
+                '핵심 결론 위주로 3~5줄 이내(공백 포함 250자 내외, 불필요한 인사·서론 제외)로 간단명료하게 작성한 한국어 답변',
             },
             citedItemIds: {
               type: Type.ARRAY,
               items: { type: Type.STRING },
               description: '답변에서 언급한 실제 보유 의류 ID 목록',
             },
+            representativeOutfit: {
+              type: Type.OBJECT,
+              description:
+                '추천하는 대표 코디 1개 정보 (코디 제안이 불필요한 단순 통계 질문이면 itemIds를 빈 배열로 반환)',
+              properties: {
+                title: {
+                  type: Type.STRING,
+                  description: '대표 코디 1개의 간결한 제목 (착장 제안이 없으면 빈 문자열)',
+                },
+                itemIds: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description:
+                    '대표 코디 1개를 구성하는 실제 보유 의류 ID 2~5개 (착장 제안이 없으면 빈 배열)',
+                },
+                stylingNote: {
+                  type: Type.STRING,
+                  description: '대표 코디의 핵심 착장 포인트 한 줄 (35자 이내)',
+                },
+              },
+              required: ['title', 'itemIds', 'stylingNote'],
+            },
           },
-          required: ['reply', 'citedItemIds'],
+          required: ['reply', 'citedItemIds', 'representativeOutfit'],
         },
       },
     });
@@ -898,12 +939,67 @@ ${
   const parsed = JSON.parse((response.text ?? '{}').trim()) as {
     reply?: string;
     citedItemIds?: string[];
+    representativeOutfit?: {
+      title?: string;
+      itemIds?: string[];
+      stylingNote?: string;
+    };
   };
 
+  const validRepItems = resolveRepresentativeOutfitItems(
+    parsed.representativeOutfit?.itemIds,
+    params.ownedItems
+  );
+
+  let representativeOutfit: ChatRepresentativeOutfit | undefined;
+  if (validRepItems.length >= 2) {
+    const repTitle =
+      parsed.representativeOutfit?.title?.trim() || `${validRepItems[0].name} 대표 추천 코디`;
+    const repNote = parsed.representativeOutfit?.stylingNote?.trim() || undefined;
+    const tempOutfit: OutfitRecommendation = {
+      id: 'chat-representative-outfit',
+      title: repTitle,
+      itemIds: validRepItems.map((i) => i.id),
+      items: validRepItems,
+      conceptSummary: repNote || repTitle,
+      stylingExplanation: repNote || parsed.reply?.trim() || '',
+      tpoFit: `${params.preferences.season} / ${params.preferences.occasion}`,
+      reuseTip: '',
+      assumptions: '',
+      rejectedIdsCount: 0,
+    };
+
+    try {
+      const imageUrl = await generateRealisticOutfitPhoto(ai, tempOutfit, validRepItems);
+      representativeOutfit = {
+        title: repTitle,
+        itemIds: validRepItems.map((i) => i.id),
+        stylingNote: repNote,
+        imageUrl,
+      };
+    } catch (imgErr) {
+      const formatted = formatGeminiError(imgErr);
+      representativeOutfit = {
+        title: repTitle,
+        itemIds: validRepItems.map((i) => i.id),
+        stylingNote: repNote,
+        imageError: formatted.message,
+      };
+    }
+  }
+
+  const mergedCitedIds = Array.from(
+    new Set([
+      ...(parsed.citedItemIds ?? []).filter((id) => ownedIdSet.has(id)),
+      ...validRepItems.map((i) => i.id),
+    ])
+  );
+
   return {
-    reply: parsed.reply?.trim() || '보유하신 옷장 데이터를 바탕으로 다시 질문해 주시면 구체적으로 안내해 드리겠습니다.',
-    citedItemIds: Array.from(
-      new Set((parsed.citedItemIds ?? []).filter((id) => ownedIdSet.has(id)))
-    ),
+    reply:
+      parsed.reply?.trim() ||
+      '보유하신 옷장 데이터를 바탕으로 간단히 정리해 드릴 수 있도록 다시 질문해 주세요.',
+    citedItemIds: mergedCitedIds,
+    representativeOutfit,
   };
 }

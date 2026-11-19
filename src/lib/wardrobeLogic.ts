@@ -927,3 +927,28 @@ export function resolveChatAttachments(params: {
     summaryText: summarySections.join('\n\n'),
   };
 }
+
+/**
+ * Validates representative outfit item IDs returned by the Fashion Assistant against ownedItems.
+ * Enforces >= 2 distinct owned items and caps at 6 items so preview generation stays grounded.
+ */
+export function resolveRepresentativeOutfitItems(
+  rawItemIds: string[] | undefined,
+  ownedItems: WardrobeItem[]
+): WardrobeItem[] {
+  if (!Array.isArray(rawItemIds) || rawItemIds.length === 0) return [];
+  const ownedMap = new Map(ownedItems.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  const resolved: WardrobeItem[] = [];
+
+  for (const id of rawItemIds) {
+    const found = ownedMap.get(id);
+    if (found && !seen.has(found.id)) {
+      seen.add(found.id);
+      resolved.push(found);
+      if (resolved.length >= 6) break;
+    }
+  }
+
+  return resolved.length >= 2 ? resolved : [];
+}

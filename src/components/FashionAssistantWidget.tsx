@@ -1,5 +1,5 @@
-import React, { useMemo, useRef, useState } from 'react';
-import { Check, Paperclip, Plus, Search, Send, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Camera, Check, Paperclip, Plus, Search, Send, X } from 'lucide-react';
 import {
   CLOTHING_CATEGORIES,
   type ChatAttachmentSelection,
@@ -50,6 +50,12 @@ export const FashionAssistantWidget: React.FC<FashionAssistantWidgetProps> = ({
   const [pickerSearch, setPickerSearch] = useState('');
   const [attachments, setAttachments] = useState<ChatAttachmentSelection>(EMPTY_ATTACHMENTS);
   const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [messages, isSending]);
 
   const ownedMap = useMemo(
     () => new Map(ownedItems.map((i) => [i.id, i])),
@@ -176,7 +182,7 @@ export const FashionAssistantWidget: React.FC<FashionAssistantWidgetProps> = ({
               내 옷장 기반 스타일 상담 챗봇
             </h2>
             <p className="text-xs text-[#525866] mt-1">
-              현재 등록된 {ownedItems.length}벌의 보유 의류를 기본 참조하며, 특정 옷이나 코디 데이터를 직접 첨부해 질문할 수 있습니다.
+              보유한 {ownedItems.length}벌을 기준으로 간단명료하게 답변하며, 추천하는 대표 코디 1개는 얼굴 제외 실사 이미지로 함께 보여드립니다.
             </p>
           </div>
 
@@ -195,7 +201,7 @@ export const FashionAssistantWidget: React.FC<FashionAssistantWidgetProps> = ({
         <div
           ref={listRef}
           aria-live="polite"
-          className="py-5 space-y-5 min-h-[340px] max-h-[520px] overflow-y-auto"
+          className="py-5 space-y-5 min-h-[340px] max-h-[640px] overflow-y-auto"
         >
           {messages.map((msg) => {
             const citedItems = (msg.citedItemIds ?? [])
@@ -265,6 +271,62 @@ export const FashionAssistantWidget: React.FC<FashionAssistantWidgetProps> = ({
                 >
                   {msg.content}
                 </div>
+                {msg.role === 'assistant' && msg.representativeOutfit && (
+                  <div className="mt-2.5 max-w-[290px] sm:max-w-[320px] w-full bg-[#FAFBFB] border border-[#E5E7EB] rounded-xl overflow-hidden">
+                    <div className="px-3.5 py-2.5 border-b border-[#ECEDF0] bg-white">
+                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#1F3A5F]">
+                        <Camera className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>대표 추천 코디 미리보기 · 얼굴 제외 실사</span>
+                      </div>
+                      <p className="text-xs font-semibold text-[#141619] mt-0.5 leading-snug">
+                        {msg.representativeOutfit.title}
+                      </p>
+                    </div>
+
+                    {msg.representativeOutfit.imageUrl ? (
+                      <div className="aspect-[3/4] w-full bg-[#F4F5F7] overflow-hidden">
+                        <img
+                          src={msg.representativeOutfit.imageUrl}
+                          alt={`${msg.representativeOutfit.title} 대표 추천 코디 실사 이미지`}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover object-top"
+                        />
+                      </div>
+                    ) : msg.representativeOutfit.imageError ? (
+                      <p
+                        role="alert"
+                        className="px-3.5 py-2.5 text-[11px] text-[#B91C1C] bg-[#FEF2F2] leading-relaxed"
+                      >
+                        대표 코디 이미지 생성 실패: {msg.representativeOutfit.imageError}
+                      </p>
+                    ) : null}
+
+                    <div className="px-3.5 py-2.5 space-y-1.5">
+                      {msg.representativeOutfit.stylingNote && (
+                        <p className="text-xs text-[#141619] leading-snug">
+                          {msg.representativeOutfit.stylingNote}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-1">
+                        {msg.representativeOutfit.itemIds
+                          .map((id) => ownedMap.get(id))
+                          .filter((item): item is WardrobeItem => Boolean(item))
+                          .map((item) => (
+                            <span
+                              key={item.id}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-white border border-[#E5E7EB] rounded text-[10px] text-[#374151]"
+                            >
+                              {item.name}
+                            </span>
+                          ))}
+                      </div>
+                      <p className="text-[10px] text-[#6B7280] leading-snug">
+                        보유 의류 사진·메타데이터 기반 실사 코디 참고 이미지(얼굴 제외)
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {citedItems.length > 0 && (
                   <div className="mt-1.5 text-[11px] text-[#525866] max-w-[90%]">
                     <span className="font-semibold text-[#141619]">참조한 보유 의류:</span>{' '}
@@ -279,7 +341,7 @@ export const FashionAssistantWidget: React.FC<FashionAssistantWidgetProps> = ({
             <div className="flex flex-col items-start">
               <div className="text-[11px] text-[#6B7280] mb-1">나만의 옷장 어시스턴트</div>
               <div className="bg-[#F5F6F7] border border-[#E5E7EB] rounded-lg px-4 py-3 text-xs text-[#525866] animate-pulse">
-                첨부된 옷장 데이터와 보유 의류 목록을 확인하며 답변을 정리하고 있습니다...
+                핵심 답변과 대표 코디 미리보기 이미지를 준비하고 있습니다...
               </div>
             </div>
           )}

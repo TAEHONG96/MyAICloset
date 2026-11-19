@@ -13,6 +13,7 @@ import {
   parseWardrobeCsv,
   resolveChatAttachments,
   resolveKoreanColorHex,
+  resolveRepresentativeOutfitItems,
   validateOutfitRecommendations,
 } from './wardrobeLogic';
 import {
@@ -273,6 +274,26 @@ test('resolveChatAttachments validates attached closet item IDs, dedupes, and fo
   assert.ok(result.summaryText.includes('총 보유량: 14벌'));
   assert.ok(result.summaryText.includes(INITIAL_PURCHASE_CANDIDATE.name));
   assert.ok(result.summaryText.includes(INITIAL_SEED_OUTFITS[0].title));
+});
+
+test('resolveRepresentativeOutfitItems filters unknown IDs, dedupes, caps at 6, and requires at least 2 owned items', () => {
+  const valid = resolveRepresentativeOutfitItems(
+    ['item-01', 'fake-item', 'item-01', 'item-05', 'item-09', 'item-12'],
+    INITIAL_WARDROBE_ITEMS
+  );
+  assert.deepEqual(
+    valid.map((i) => i.id),
+    ['item-01', 'item-05', 'item-09', 'item-12']
+  );
+
+  const tooFew = resolveRepresentativeOutfitItems(['item-01', 'fake-item'], INITIAL_WARDROBE_ITEMS);
+  assert.equal(tooFew.length, 0);
+
+  const capped = resolveRepresentativeOutfitItems(
+    INITIAL_WARDROBE_ITEMS.map((i) => i.id),
+    INITIAL_WARDROBE_ITEMS
+  );
+  assert.equal(capped.length, 6);
 });
 
 

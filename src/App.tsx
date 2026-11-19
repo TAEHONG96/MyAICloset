@@ -84,7 +84,7 @@ const WELCOME_MESSAGE: ChatMessage = {
   id: 'msg-welcome',
   role: 'assistant',
   content:
-    '안녕하세요, 나만의 옷장 패션 어시스턴트입니다.\n등록하신 보유 의류 목록만을 바탕으로 코디 응용법, 계절별 활용 팁, 중복 의류 정리, 구매 고민 상담을 도와드립니다. 무엇이든 편하게 질문해 주세요.',
+    '안녕하세요, 나만의 옷장입니다.\n보유 의류를 바탕으로 핵심만 간단명료하게 답변드리고, 추천하는 대표 코디 1개는 실사 착장 이미지로도 바로 보여드립니다.',
   timestamp: formatTimeNow(),
 };
 
@@ -384,6 +384,7 @@ export function App() {
         role: 'assistant',
         content: response.reply,
         citedItemIds: response.citedItemIds,
+        representativeOutfit: response.representativeOutfit,
         timestamp: formatTimeNow(),
       };
       setChatMessages((prev) => [...prev, botMsg]);

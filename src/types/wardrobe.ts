@@ -189,11 +189,20 @@ export interface OutfitIllustrationSpec {
   source: 'ai' | 'local';
 }
 
+export interface ChatRepresentativeOutfit {
+  title: string;
+  itemIds: string[];
+  stylingNote?: string;
+  imageUrl?: string;
+  imageError?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   citedItemIds?: string[];
+  representativeOutfit?: ChatRepresentativeOutfit;
   attachedItemIds?: string[];
   attachedContextLabels?: string[];
   timestamp: string;
