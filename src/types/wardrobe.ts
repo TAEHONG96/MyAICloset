@@ -215,7 +215,7 @@ export interface ChatAttachmentSelection {
   includePurchaseCandidate: boolean;
 }
 
-export type WorkspaceSection = 'closet' | 'outfit' | 'purchase' | 'assistant';
+export type WorkspaceSection = 'home' | 'closet' | 'outfit' | 'purchase' | 'assistant';
 
 export const CLOTHING_CATEGORIES: ClothingCategory[] = [
   '아우터',

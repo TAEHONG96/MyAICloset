@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, X } from 'lucide-react';
 import {
   INITIAL_PURCHASE_CANDIDATE,
   INITIAL_SEED_OUTFITS,
@@ -39,6 +40,10 @@ import { OutfitPreviewWidget } from './components/OutfitPreviewWidget';
 import { PurchaseCandidateWidget } from './components/PurchaseCandidateWidget';
 import { PurchaseAdvisorWidget } from './components/PurchaseAdvisorWidget';
 import { FashionAssistantWidget } from './components/FashionAssistantWidget';
+import { WardrobeHome } from './components/WardrobeHome';
+import { GarmentDetail } from './components/GarmentDetail';
+import { GarmentEditor } from './components/GarmentEditor';
+import { Modal } from './components/Modal';
 
 const STORAGE_KEYS = {
   items: 'my-ai-closet:items:v1',
@@ -84,7 +89,7 @@ const WELCOME_MESSAGE: ChatMessage = {
   id: 'msg-welcome',
   role: 'assistant',
   content:
-    '안녕하세요, 나만의 옷장입니다.\n보유 의류를 바탕으로 핵심만 간단명료하게 답변드리고, 추천하는 대표 코디 1개는 실사 착장 이미지로도 바로 보여드립니다.',
+    '안녕하세요. 오늘은 어떤 옷을 입고 싶으세요? 입을 옷이나 장소를 알려주면 내 옷장에서 어울리는 조합을 찾아드릴게요.',
   timestamp: formatTimeNow(),
 };
 
@@ -98,14 +103,45 @@ function loadInitialItems(): WardrobeItem[] {
     ])
   );
   return stored.map((item) => {
-    if (item.imageUrl) return item;
+    if (typeof item.imageUrl === 'string') return item;
     const starterImg = sampleImageById.get(item.id);
     return starterImg ? { ...item, imageUrl: starterImg } : item;
   });
 }
 
 export function App() {
-  const [activeSection, setActiveSection] = useState<WorkspaceSection>('closet');
+  const [activeSection, setActiveSection] = useState<WorkspaceSection>('home');
+  const mainRef = useRef<HTMLElement>(null);
+  const navigateFocus = useRef(false);
+  const [detailId, setDetailId] = useState<string>();
+  const [editor, setEditor] = useState<'new' | WardrobeItem>();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [notice, setNotice] = useState<{ message: string; itemId?: string }>();
+  const [storageError, setStorageError] = useState(false);
+
+  function navigate(section: WorkspaceSection) {
+    setNotice(undefined);
+    if (section === activeSection) {
+      mainRef.current?.focus({ preventScroll: true });
+    } else {
+      navigateFocus.current = true;
+      setActiveSection(section);
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
+  useEffect(() => {
+    if (navigateFocus.current) {
+      navigateFocus.current = false;
+      mainRef.current?.focus({ preventScroll: true });
+    }
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (!notice || notice.itemId) return;
+    const timer = window.setTimeout(() => setNotice(undefined), 6500);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   // Core Shared Wardrobe State (Widgets 1, 2, 5)
   const [items, setItems] = useState<WardrobeItem[]>(() => loadInitialItems());
@@ -135,23 +171,29 @@ export function App() {
   const [previewCache, setPreviewCache] = useState<Record<string, OutfitIllustrationSpec>>({});
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const previewVersion = useRef(0);
 
   // Widget 6: Purchase Advisor
   const [purchaseAdvice, setPurchaseAdvice] = useState<PurchaseAdvice | null>(null);
   const [isEvaluatingPurchase, setIsEvaluatingPurchase] = useState(false);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
+  const purchaseContext = useRef({ purchaseCandidate, items });
+  purchaseContext.current = { purchaseCandidate, items };
 
   // Widget 8: Fashion Assistant Chat
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [failedChat, setFailedChat] = useState<{ text: string; attachments?: ChatAttachmentSelection }>();
 
   // Persist user data
   useEffect(() => {
     try {
       window.localStorage.setItem(STORAGE_KEYS.items, JSON.stringify(items));
+      setStorageError(false);
     } catch {
-      // Ignore quota errors
+      setStorageError(true);
     }
   }, [items]);
 
@@ -178,10 +220,9 @@ export function App() {
     [purchaseCandidate, items]
   );
 
-  const selectedOutfit = useMemo(
-    () => outfits.find((o) => o.id === selectedOutfitId) ?? null,
-    [outfits, selectedOutfitId]
-  );
+  const currentOutfits = useMemo(() => filterOutfitsByOwned(outfits, items), [outfits, items]);
+  const selectedOutfit = currentOutfits.find((outfit) => outfit.id === selectedOutfitId) ?? null;
+  const detailItem = items.find((item) => item.id === detailId);
 
   const illustrationSpec = useMemo<OutfitIllustrationSpec | null>(() => {
     if (!selectedOutfit) return null;
@@ -194,6 +235,7 @@ export function App() {
     setItems((prev) => [{ id, ...newItem }, ...prev]);
     setDiagnosis(null);
     setPurchaseAdvice(null);
+    return id;
   };
 
   const handleUpdateItem = (id: string, patch: Partial<WardrobeItem>) => {
@@ -223,6 +265,11 @@ export function App() {
 
   const handleImportItems = (imported: WardrobeItem[], mode: 'append' | 'replace') => {
     setItems((prev) => (mode === 'replace' ? imported : [...imported, ...prev]));
+    if (mode === 'replace') {
+      setOutfits([]);
+      setSelectedOutfitId(null);
+      setPreviewCache({});
+    }
     setDiagnosis(null);
     setPurchaseAdvice(null);
   };
@@ -257,6 +304,8 @@ export function App() {
     setPreviewCache({});
     setDiagnosis(null);
     setPreviewError(null);
+    setPurchaseAdvice(null);
+    setPurchaseError(null);
   };
 
   const handleClearAll = () => {
@@ -265,6 +314,8 @@ export function App() {
     setSelectedOutfitId(null);
     setPreviewCache({});
     setDiagnosis(null);
+    setPurchaseAdvice(null);
+    setPurchaseError(null);
   };
 
   // Widget 3 handler
@@ -273,9 +324,11 @@ export function App() {
     setDiagnosisError(null);
     try {
       const result = await requestClosetDiagnosis(items);
-      setDiagnosis(result);
+      if (purchaseContext.current.items === items) setDiagnosis(result);
     } catch (err) {
-      setDiagnosisError(err instanceof Error ? err.message : 'AI 진단 중 오류가 발생했습니다.');
+      if (purchaseContext.current.items === items) {
+        setDiagnosisError(err instanceof Error ? err.message : 'AI 진단 중 오류가 발생했습니다.');
+      }
     } finally {
       setIsDiagnosing(false);
     }
@@ -287,25 +340,32 @@ export function App() {
     forceRegenerate = false
   ) => {
     setSelectedOutfitId(outfit.id);
+    setPreviewOpen(true);
     setPreviewError(null);
+    const version = ++previewVersion.current;
 
     const alreadyHasPhoto = Boolean(previewCache[outfit.id]?.generatedImageUrl);
-    if (!forceRegenerate && alreadyHasPhoto) return;
+    if (!forceRegenerate && alreadyHasPhoto) {
+      setIsGeneratingPreview(false);
+      return;
+    }
 
     setIsGeneratingPreview(true);
     try {
       const aiSpec = await requestOutfitPreview(outfit, items);
-      setPreviewCache((prev) => ({ ...prev, [outfit.id]: aiSpec }));
+      if (version === previewVersion.current) {
+        if (!aiSpec.generatedImageUrl) throw new Error('착장 이미지가 반환되지 않았습니다. 다시 시도해 주세요.');
+        setPreviewCache((prev) => ({ ...prev, [outfit.id]: aiSpec }));
+      }
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : '실사 코디 이미지 생성 실패');
+      if (version === previewVersion.current) setPreviewError(err instanceof Error ? err.message : '실사 코디 이미지 생성 실패');
     } finally {
-      setIsGeneratingPreview(false);
+      if (version === previewVersion.current) setIsGeneratingPreview(false);
     }
   };
 
   // Widget 4 handler
   const handleGenerateOutfits = async () => {
-    setActiveSection('outfit');
     setIsRecommending(true);
     setRecommendError(null);
     try {
@@ -313,10 +373,8 @@ export function App() {
       const tagged = generated.map((o) => ({ ...o, source: 'ai' as const }));
       setOutfits(tagged);
       setPreviewCache({});
-      if (tagged.length > 0) {
-        await handleSelectOutfitForPreview(tagged[0], true);
-      } else {
-        setSelectedOutfitId(null);
+      setSelectedOutfitId(tagged[0]?.id ?? null);
+      if (tagged.length === 0) {
         setRecommendError(
           '보유 의류만으로 유효한 조합을 구성하지 못했습니다. 상의·하의 등을 추가로 등록해 주세요.'
         );
@@ -332,21 +390,30 @@ export function App() {
   const handleEvaluatePurchase = async () => {
     setIsEvaluatingPurchase(true);
     setPurchaseError(null);
+    if (window.matchMedia('(max-width: 1023px)').matches) {
+      document.getElementById('purchase-comparison')?.scrollIntoView({ block: 'start' });
+      document.getElementById('purchase-results-heading')?.focus({ preventScroll: true });
+    }
     try {
       const result = await requestPurchaseAdvice(items, purchaseCandidate);
-      setPurchaseAdvice(result);
+      if (purchaseContext.current.purchaseCandidate === purchaseCandidate && purchaseContext.current.items === items) {
+        setPurchaseAdvice(result);
+      }
     } catch (err) {
-      setPurchaseError(err instanceof Error ? err.message : '구매 분석 중 오류가 발생했습니다.');
+      if (purchaseContext.current.purchaseCandidate === purchaseCandidate && purchaseContext.current.items === items) {
+        setPurchaseError(err instanceof Error ? err.message : '구매 분석 중 오류가 발생했습니다.');
+      }
     } finally {
       setIsEvaluatingPurchase(false);
     }
   };
 
   // Widget 8 handler
-  const handleSendChat = async (text: string, attachments?: ChatAttachmentSelection) => {
+  const handleSendChat = async (text: string, attachments?: ChatAttachmentSelection, retry = false) => {
+    if (isSendingChat) return;
     const resolved = resolveChatAttachments({
       ownedItems: items,
-      outfits,
+      outfits: currentOutfits,
       purchaseCandidate,
       selection: attachments,
     });
@@ -363,18 +430,19 @@ export function App() {
         resolved.contextLabels.length > 0 ? resolved.contextLabels : undefined,
       timestamp: formatTimeNow(),
     };
-    const nextHistory = [...chatMessages, userMsg];
-    setChatMessages(nextHistory);
+    const history = retry ? chatMessages.slice(0, -1) : chatMessages;
+    if (!retry) setChatMessages([...history, userMsg]);
     setIsSendingChat(true);
     setChatError(null);
+    setFailedChat(undefined);
 
     try {
       const response = await requestAssistantReply({
         ownedItems: items,
         preferences,
-        outfits,
+        outfits: currentOutfits,
         purchaseCandidate,
-        history: chatMessages.map((m) => ({ role: m.role, content: m.content })),
+        history: history.map((m) => ({ role: m.role, content: m.content })),
         message: text,
         attachments,
       });
@@ -390,179 +458,186 @@ export function App() {
       setChatMessages((prev) => [...prev, botMsg]);
     } catch (err) {
       setChatError(err instanceof Error ? err.message : '답변 생성 중 오류가 발생했습니다.');
+      setFailedChat({ text, attachments });
     } finally {
       setIsSendingChat(false);
     }
   };
 
+
+  const closeDetail = () => {
+    setDetailId(undefined);
+    setConfirmDelete(false);
+  };
+  const openItem = (item: WardrobeItem) => setDetailId(item.id);
+  const openRegistration = () => setEditor('new');
+
   return (
-    <div className="min-h-screen flex flex-col bg-[#F5F6F7] text-[#141619]">
-      <TopHeader
-        activeSection={activeSection}
-        onSelectSection={(section) => {
-          setActiveSection(section);
-          window.scrollTo({ top: 0 });
-        }}
-        onQuickRecommend={handleGenerateOutfits}
-        isRecommending={isRecommending}
-      />
+    <div className="min-h-screen flex flex-col">
+      <a href="#main-content" className="skip-link action action-primary">본문으로 건너뛰기</a>
+      <TopHeader activeSection={activeSection} onSelectSection={navigate} onAdd={openRegistration} />
 
-      <main className="flex-1 max-w-[1380px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
-        {/* Editorial Studio Intro Strip */}
-        <section className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 pb-5 border-b border-[#E5E7EB]">
-          <div className="max-w-2xl">
-            <h1 className="text-2xl sm:text-3xl font-semibold text-[#141619] tracking-tight">
-              가진 옷을 가장 잘 입는 AI 개인 옷장 어시스턴트
-            </h1>
-            <p className="text-sm text-[#525866] mt-1.5 leading-relaxed">
-              내 옷장에 등록된 의류만으로 코디를 조합하고, 새 옷 구매 전 중복 여부와 활용 가치를 냉정하게 점검합니다.
-            </p>
-          </div>
+      <main id="main-content" ref={mainRef} tabIndex={-1} className="site-main site-width">
+        {storageError && <p role="alert" className="form-status mb-4">브라우저 저장 공간을 사용할 수 없어 현재 옷장 변경사항을 저장하지 못했습니다.</p>}
 
-          <div className="flex flex-wrap items-center gap-x-4 sm:gap-x-5 gap-y-1.5 text-xs text-[#525866] shrink-0">
-            <span>
-              보유 의류{' '}
-              <strong className="font-mono tabular-nums text-[#141619]">{items.length}</strong>벌
-            </span>
-            <span aria-hidden="true" className="hidden sm:inline">
-              ·
-            </span>
-            <span>
-              현재 조건{' '}
-              <strong className="text-[#141619]">
-                {preferences.season} / {preferences.occasion}
-              </strong>
-            </span>
-            <span aria-hidden="true" className="hidden sm:inline">
-              ·
-            </span>
-            <span>
-              추천 코디{' '}
-              <strong className="font-mono tabular-nums text-[#141619]">{outfits.length}</strong>건
-            </span>
-          </div>
-        </section>
+        {activeSection === 'home' && (
+          <WardrobeHome items={items} latestOutfit={currentOutfits.find((outfit) => outfit.source === 'ai')}
+            onNavigate={navigate} onAdd={openRegistration} onOpenItem={openItem} />
+        )}
 
-        {/* Connected Workspace Views (8 Connected Widgets across 4 focused studio views) */}
         {activeSection === 'closet' && (
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-            <div className="xl:col-span-8">
-              <ClosetManagerWidget
-                items={items}
-                onAddItem={handleAddItem}
-                onUpdateItem={handleUpdateItem}
-                onImportItems={handleImportItems}
-                onDeleteItem={handleDeleteItem}
-                onResetSample={handleResetSample}
-                onClearAll={handleClearAll}
-              />
-            </div>
-            <div className="xl:col-span-4">
-              <ClosetAnalyzerWidget
-                summary={closetSummary}
-                diagnosis={diagnosis}
-                isLoading={isDiagnosing}
-                error={diagnosisError}
-                onRequestDiagnosis={handleRequestDiagnosis}
-              />
-            </div>
-          </div>
+          <ClosetManagerWidget
+            items={items}
+            onAdd={openRegistration}
+            onOpenItem={openItem}
+            onImportItems={handleImportItems}
+            onResetSample={handleResetSample}
+            onClearAll={handleClearAll}
+            analysis={<ClosetAnalyzerWidget summary={closetSummary} diagnosis={diagnosis}
+              isLoading={isDiagnosing} error={diagnosisError} onRequestDiagnosis={handleRequestDiagnosis} />}
+          />
         )}
 
         {activeSection === 'outfit' && (
-          <div className="space-y-6">
-            <StylePreferencesWidget
-              preferences={preferences}
+          <div className="space-y-7">
+            <PageIntro title="오늘의 코디" label="THE LOOKBOOK" description="입을 상황을 정하면 내 옷장에서 어울리는 조합을 찾아드려요." />
+            <StylePreferencesWidget preferences={preferences} ownedCount={items.length} isGenerating={isRecommending}
+              onChange={setPreferences} onGenerateOutfits={handleGenerateOutfits} />
+            <OutfitRecommenderWidget
+              outfits={currentOutfits}
+              generatedOutfitIds={Object.keys(previewCache).filter((id) => Boolean(previewCache[id]?.generatedImageUrl))}
+              isLoading={isRecommending}
+              error={recommendError}
               ownedCount={items.length}
-              isGenerating={isRecommending}
-              onChange={setPreferences}
+              onOpenItem={openItem}
+              onSelectForPreview={(outfit) => void handleSelectOutfitForPreview(outfit)}
               onGenerateOutfits={handleGenerateOutfits}
+              onAdd={openRegistration}
             />
-
-            <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-              <div className="xl:col-span-7">
-                <OutfitRecommenderWidget
-                  outfits={outfits}
-                  selectedOutfitId={selectedOutfitId}
-                  generatedOutfitIds={Object.keys(previewCache).filter(
-                    (id) => Boolean(previewCache[id]?.generatedImageUrl)
-                  )}
-                  isLoading={isRecommending}
-                  error={recommendError}
-                  ownedCount={items.length}
-                  onSelectForPreview={(outfit) => handleSelectOutfitForPreview(outfit, false)}
-                  onGenerateOutfits={handleGenerateOutfits}
-                />
-              </div>
-              <div className="xl:col-span-5">
-                <OutfitPreviewWidget
-                  selectedOutfit={selectedOutfit}
-                  illustrationSpec={illustrationSpec}
-                  isLoading={isGeneratingPreview}
-                  error={previewError}
-                  onRefreshAiDirection={() => {
-                    if (selectedOutfit) {
-                      handleSelectOutfitForPreview(selectedOutfit, true);
-                    }
-                  }}
-                />
-              </div>
-            </div>
           </div>
         )}
 
         {activeSection === 'purchase' && (
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-            <div className="xl:col-span-5">
-              <PurchaseCandidateWidget
-                candidate={purchaseCandidate}
-                isEvaluating={isEvaluatingPurchase}
-                onChange={(next) => {
-                  setPurchaseCandidate(next);
-                  setPurchaseAdvice(null);
-                  setPurchaseError(null);
-                }}
-                onEvaluate={handleEvaluatePurchase}
-              />
+          <>
+            <PageIntro title="구매 전 분석" label="SHOPPING ADVISOR" description="마음에 든 옷과 내 옷장을 비교해 활용도와 유사한 옷을 살펴보세요." />
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              <div className="lg:col-span-5 min-w-0">
+                <PurchaseCandidateWidget candidate={purchaseCandidate} isEvaluating={isEvaluatingPurchase}
+                  onChange={(next) => {
+                    setPurchaseCandidate(next);
+                    setPurchaseAdvice(null);
+                    setPurchaseError(null);
+                  }}
+                  onEvaluate={handleEvaluatePurchase} />
+              </div>
+              <div className="lg:col-span-7 min-w-0">
+                <PurchaseAdvisorWidget candidate={purchaseCandidate} ownedItems={items} precheck={purchasePrecheck}
+                  advice={purchaseAdvice} isLoading={isEvaluatingPurchase} error={purchaseError} onOpenItem={openItem} />
+              </div>
             </div>
-            <div className="xl:col-span-7">
-              <PurchaseAdvisorWidget
-                candidate={purchaseCandidate}
-                ownedItems={items}
-                precheck={purchasePrecheck}
-                advice={purchaseAdvice}
-                isLoading={isEvaluatingPurchase}
-                error={purchaseError}
-              />
-            </div>
-          </div>
+          </>
         )}
 
         {activeSection === 'assistant' && (
-          <FashionAssistantWidget
-            messages={chatMessages}
-            ownedItems={items}
-            preferences={preferences}
-            outfits={outfits}
-            purchaseCandidate={purchaseCandidate}
-            isSending={isSendingChat}
-            error={chatError}
-            onSendMessage={handleSendChat}
-            onClearChat={() => {
-              setChatMessages([WELCOME_MESSAGE]);
-              setChatError(null);
-            }}
-          />
+          <>
+            <PageIntro title="AI 스타일 어시스턴트" label="STYLE CONSULTATION" description="옷이나 코디를 첨부해서 내 옷장을 바탕으로 스타일을 상담해 보세요." />
+            <FashionAssistantWidget
+              messages={chatMessages}
+              ownedItems={items}
+              preferences={preferences}
+              outfits={currentOutfits}
+              purchaseCandidate={purchaseCandidate}
+              isSending={isSendingChat}
+              error={chatError}
+              onOpenItem={openItem}
+              onSendMessage={handleSendChat}
+              onRetry={failedChat ? () => void handleSendChat(failedChat.text, failedChat.attachments, true) : undefined}
+              onClearChat={() => {
+                setChatMessages([WELCOME_MESSAGE]);
+                setChatError(null);
+                setFailedChat(undefined);
+              }}
+            />
+          </>
         )}
       </main>
 
-      <footer className="border-t border-[#E5E7EB] bg-white mt-12">
-        <div className="max-w-[1380px] mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-[#6B7280]">
-          <span>나만의 옷장 (My AI Closet) · 보유 의류 재활용 중심 개인 스타일링 워크스페이스</span>
-          <span>보유 목록에 없는 의류는 생성하지 않으며, 모든 추천에는 가정과 불확실성이 함께 안내됩니다.</span>
+      <footer className="site-footer">
+        <div className="site-width footer-inner">
+          <strong>My AI Closet</strong>
+          <span>나만의 옷장 · AI 개인 스타일링</span>
         </div>
       </footer>
+
+      {previewOpen && selectedOutfit && (
+        <Modal title="AI 착장 미리보기" onClose={() => setPreviewOpen(false)} className="preview-modal">
+          <OutfitPreviewWidget selectedOutfit={selectedOutfit} illustrationSpec={illustrationSpec}
+            isLoading={isGeneratingPreview} error={previewError}
+            onRefreshAiDirection={() => void handleSelectOutfitForPreview(selectedOutfit, true)} />
+        </Modal>
+      )}
+
+      {detailItem && !confirmDelete && (
+        <GarmentDetail
+          item={detailItem}
+          onClose={closeDetail}
+          onEdit={() => {
+            closeDetail();
+            setEditor(detailItem);
+          }}
+          onDelete={() => setConfirmDelete(true)}
+        />
+      )}
+      {detailItem && confirmDelete && (
+        <Modal title="의류를 삭제할까요?" onClose={() => setConfirmDelete(false)}>
+          <p className="text-sm leading-relaxed">{detailItem.name}의 사진과 정보가 옷장에서 삭제됩니다.</p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" className="action action-outline" onClick={() => setConfirmDelete(false)}>취소</button>
+            <button type="button" className="action action-primary" onClick={() => {
+              handleDeleteItem(detailItem.id);
+              closeDetail();
+              setNotice({ message: '의류를 삭제했어요.' });
+            }}>삭제</button>
+          </div>
+        </Modal>
+      )}
+      {editor && (
+        <GarmentEditor item={editor === 'new' ? undefined : editor} onClose={() => setEditor(undefined)}
+          onSave={(item) => {
+            if (editor === 'new') {
+              const itemId = handleAddItem(item);
+              setNotice({ message: '옷장에 새 의류를 등록했어요.', itemId });
+            } else {
+              handleUpdateItem(editor.id, item);
+              setNotice({ message: '의류 정보를 저장했어요.' });
+            }
+            setEditor(undefined);
+          }}
+        />
+      )}
+      <div className="status-toast" role="status">
+        {notice && <>
+          <Check size={16} aria-hidden="true" />
+          <span>{notice.message}</span>
+          {notice.itemId && <button type="button" className="text-action" onClick={() => {
+            setDetailId(notice.itemId);
+          }}>의류 보기</button>}
+          <button type="button" className="icon-button" aria-label="알림 닫기" onClick={() => setNotice(undefined)}><X size={16} aria-hidden="true" /></button>
+        </>}
+      </div>
     </div>
+  );
+}
+
+function PageIntro({ title, label, description }: { title: string; label: string; description: string }) {
+  return (
+    <header className="page-intro">
+      <div>
+        <p className="editorial-label">{label}</p>
+        <h1>{title}</h1>
+        <p>{description}</p>
+      </div>
+    </header>
   );
 }
 

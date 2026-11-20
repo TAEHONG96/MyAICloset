@@ -1,17 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, Check, Paperclip, Plus, Search, Send, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { LoaderCircle, Paperclip, Send } from 'lucide-react';
+import { QUICK_CHAT_PROMPTS } from '../data/sampleCloset';
 import {
   CLOTHING_CATEGORIES,
-  type ChatAttachmentSelection,
-  type ChatMessage,
-  type ClothingCategory,
-  type OutfitRecommendation,
-  type PurchaseCandidate,
-  type StylePreferences,
-  type WardrobeItem,
+  type ChatAttachmentSelection, type ChatMessage, type OutfitRecommendation,
+  type PurchaseCandidate, type StylePreferences, type WardrobeItem,
 } from '../types/wardrobe';
-import { QUICK_CHAT_PROMPTS } from '../data/sampleCloset';
-import { formatVisualMetadataSummary, resolveKoreanColorHex } from '../lib/wardrobeLogic';
+import { GarmentImage } from './GarmentImage';
+import { ItemStrip } from './ItemStrip';
+import { Modal } from './Modal';
 
 interface FashionAssistantWidgetProps {
   messages: ChatMessage[];
@@ -21,874 +18,214 @@ interface FashionAssistantWidgetProps {
   purchaseCandidate: PurchaseCandidate;
   isSending: boolean;
   error: string | null;
+  onOpenItem: (item: WardrobeItem) => void;
   onSendMessage: (text: string, attachments?: ChatAttachmentSelection) => void;
+  onRetry?: () => void;
   onClearChat: () => void;
 }
 
 const EMPTY_ATTACHMENTS: ChatAttachmentSelection = {
-  itemIds: [],
-  outfitIds: [],
-  includeClosetSummary: false,
-  includePurchaseCandidate: false,
+  itemIds: [], outfitIds: [], includeClosetSummary: false, includePurchaseCandidate: false,
 };
 
-export const FashionAssistantWidget: React.FC<FashionAssistantWidgetProps> = ({
-  messages,
-  ownedItems,
-  preferences,
-  outfits,
-  purchaseCandidate,
-  isSending,
-  error,
-  onSendMessage,
-  onClearChat,
-}) => {
+export function FashionAssistantWidget({
+  messages, ownedItems, preferences, outfits, purchaseCandidate, isSending, error, onOpenItem, onSendMessage, onRetry, onClearChat,
+}: FashionAssistantWidgetProps) {
   const [input, setInput] = useState('');
-  const [inputError, setInputError] = useState<string | null>(null);
-  const [isPickerOpen, setIsPickerOpen] = useState(false);
-  const [pickerCategory, setPickerCategory] = useState<'전체' | ClothingCategory>('전체');
-  const [pickerSearch, setPickerSearch] = useState('');
-  const [attachments, setAttachments] = useState<ChatAttachmentSelection>(EMPTY_ATTACHMENTS);
-  const listRef = useRef<HTMLDivElement | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [attachments, setAttachments] = useState(EMPTY_ATTACHMENTS);
+  const log = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
+  const itemsById = new Map(ownedItems.map((item) => [item.id, item]));
+  const outfitsById = new Map(outfits.map((outfit) => [outfit.id, outfit]));
+  const resolveItems = (ids?: string[]) => (ids ?? []).flatMap((id) => {
+    const item = itemsById.get(id);
+    return item ? [item] : [];
+  });
+  const selection = {
+    ...attachments,
+    itemIds: attachments.itemIds.filter((id) => itemsById.has(id)),
+    outfitIds: attachments.outfitIds.filter((id) => outfitsById.has(id)),
+    includePurchaseCandidate: attachments.includePurchaseCandidate && Boolean(purchaseCandidate.name.trim()),
+  };
+  const attachmentLabels = [
+    ...resolveItems(selection.itemIds).map((item) => item.name),
+    ...selection.outfitIds.map((id) => outfitsById.get(id)?.title),
+    ...(selection.includeClosetSummary ? ['옷장 요약'] : []),
+    ...(selection.includePurchaseCandidate ? [purchaseCandidate.name] : []),
+  ];
 
   useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
-    }
+    if (log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [messages, isSending]);
 
-  const ownedMap = useMemo(
-    () => new Map(ownedItems.map((i) => [i.id, i])),
-    [ownedItems]
-  );
-
-  const outfitMap = useMemo(
-    () => new Map(outfits.map((o) => [o.id, o])),
-    [outfits]
-  );
-
-  // Filter out any deleted items or outdated outfits from current draft selection
-  const activeItemIds = useMemo(
-    () => attachments.itemIds.filter((id) => ownedMap.has(id)),
-    [attachments.itemIds, ownedMap]
-  );
-  const activeOutfitIds = useMemo(
-    () => attachments.outfitIds.filter((id) => outfitMap.has(id)),
-    [attachments.outfitIds, outfitMap]
-  );
-
-  const attachedItems = useMemo(
-    () =>
-      activeItemIds
-        .map((id) => ownedMap.get(id))
-        .filter((i): i is WardrobeItem => Boolean(i)),
-    [activeItemIds, ownedMap]
-  );
-
-  const totalAttachmentCount =
-    activeItemIds.length +
-    activeOutfitIds.length +
-    (attachments.includeClosetSummary ? 1 : 0) +
-    (attachments.includePurchaseCandidate && purchaseCandidate.name.trim() ? 1 : 0);
-
-  const filteredPickerItems = useMemo(() => {
-    const q = pickerSearch.trim().toLowerCase();
-    return ownedItems.filter((item) => {
-      if (pickerCategory !== '전체' && item.category !== pickerCategory) return false;
-      if (!q) return true;
-      return (
-        item.name.toLowerCase().includes(q) ||
-        item.color.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q) ||
-        (item.visualMeta?.material ?? '').toLowerCase().includes(q)
-      );
-    });
-  }, [ownedItems, pickerCategory, pickerSearch]);
-
-  const toggleItemAttachment = (id: string) => {
-    setAttachments((prev) => {
-      const exists = prev.itemIds.includes(id);
-      return {
-        ...prev,
-        itemIds: exists ? prev.itemIds.filter((x) => x !== id) : [...prev.itemIds, id],
-      };
-    });
-  };
-
-  const toggleOutfitAttachment = (id: string) => {
-    setAttachments((prev) => {
-      const exists = prev.outfitIds.includes(id);
-      return {
-        ...prev,
-        outfitIds: exists ? prev.outfitIds.filter((x) => x !== id) : [...prev.outfitIds, id],
-      };
-    });
-  };
-
-  const buildCurrentSelection = (): ChatAttachmentSelection | undefined => {
-    const clean: ChatAttachmentSelection = {
-      itemIds: activeItemIds,
-      outfitIds: activeOutfitIds,
-      includeClosetSummary: attachments.includeClosetSummary,
-      includePurchaseCandidate:
-        attachments.includePurchaseCandidate && Boolean(purchaseCandidate.name.trim()),
-    };
-    const count =
-      clean.itemIds.length +
-      clean.outfitIds.length +
-      (clean.includeClosetSummary ? 1 : 0) +
-      (clean.includePurchaseCandidate ? 1 : 0);
-    return count > 0 ? clean : undefined;
-  };
-
-  const dispatchMessage = (text: string) => {
-    const payload = buildCurrentSelection();
-    onSendMessage(text, payload);
-    setAttachments(EMPTY_ATTACHMENTS);
-    setIsPickerOpen(false);
-    requestAnimationFrame(() => {
-      if (listRef.current) {
-        listRef.current.scrollTop = listRef.current.scrollHeight;
-      }
-    });
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim()) {
-      setInputError('질문 내용을 입력해 주세요.');
-      return;
-    }
-    setInputError(null);
-    const messageText = input.trim();
+  function send(message: string) {
+    if (!message.trim() || isSending) return;
+    onSendMessage(message.trim(), attachmentLabels.length ? selection : undefined);
     setInput('');
-    dispatchMessage(messageText);
-  };
+    setAttachments(EMPTY_ATTACHMENTS);
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-      {/* Main Chat Panel */}
-      <section
-        aria-labelledby="widget-fashion-assistant-heading"
-        className="lg:col-span-8 bg-white border border-[#E5E7EB] rounded-xl p-5 sm:p-6 flex flex-col"
-      >
-        <div className="flex items-end justify-between gap-3 pb-4 border-b border-[#ECEDF0]">
-          <div>
-            <p className="text-xs font-medium text-[#525866] mb-1">08. 패션 어시스턴트</p>
-            <h2
-              id="widget-fashion-assistant-heading"
-              className="text-xl font-semibold text-[#141619]"
-            >
-              내 옷장 기반 스타일 상담 챗봇
-            </h2>
-            <p className="text-xs text-[#525866] mt-1">
-              보유한 {ownedItems.length}벌을 기준으로 간단명료하게 답변하며, 추천하는 대표 코디 1개는 얼굴 제외 실사 이미지로 함께 보여드립니다.
-            </p>
-          </div>
-
-          {messages.length > 1 && (
-            <button
-              type="button"
-              onClick={onClearChat}
-              className="text-xs text-[#525866] hover:text-[#141619] whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              대화 초기화
-            </button>
-          )}
+    <div className="assistant-layout">
+      <section className="assistant-chat" aria-labelledby="chat-heading">
+        <div className="chat-heading">
+          <h2 id="chat-heading" className="text-lg font-semibold">스타일 상담</h2>
+          {messages.length > 1 && <button type="button" className="text-action disabled:opacity-50" onClick={onClearChat} disabled={isSending}>대화 초기화</button>}
         </div>
-
-        {/* Message List */}
-        <div
-          ref={listRef}
-          aria-live="polite"
-          className="py-5 space-y-5 min-h-[340px] max-h-[640px] overflow-y-auto"
-        >
-          {messages.map((msg) => {
-            const citedItems = (msg.citedItemIds ?? [])
-              .map((id) => ownedMap.get(id))
-              .filter((i): i is WardrobeItem => Boolean(i));
-            const msgAttachedItems = (msg.attachedItemIds ?? [])
-              .map((id) => ownedMap.get(id))
-              .filter((i): i is WardrobeItem => Boolean(i));
-            const msgContextLabels = msg.attachedContextLabels ?? [];
-
+        <div className="chat-log" ref={log} role="log" aria-label="상담 메시지" tabIndex={0}>
+          {messages.map((message) => {
+            const user = message.role === 'user';
+            const representative = message.representativeOutfit;
+            const outfitItems = resolveItems(representative?.itemIds);
+            const citedItems = resolveItems(message.citedItemIds).filter((item) => !outfitItems.some((outfitItem) => outfitItem.id === item.id));
+            const attached = [...resolveItems(message.attachedItemIds).map((item) => item.name), ...(message.attachedContextLabels ?? [])];
             return (
-              <div
-                key={msg.id}
-                className={`flex flex-col ${
-                  msg.role === 'user' ? 'items-end' : 'items-start'
-                }`}
-              >
-                <div className="text-[11px] text-[#6B7280] mb-1">
-                  {msg.role === 'user' ? '나' : '나만의 옷장 어시스턴트'} ·{' '}
-                  <span className="font-mono tabular-nums">{msg.timestamp}</span>
-                </div>
-
-                {/* User-attached Closet Data Preview inside message history */}
-                {msg.role === 'user' &&
-                  (msgAttachedItems.length > 0 || msgContextLabels.length > 0) && (
-                    <div className="mb-1.5 max-w-[90%] flex flex-wrap justify-end gap-1.5">
-                      {msgAttachedItems.map((item) => (
-                        <div
-                          key={item.id}
-                          className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#F5F6F7] border border-[#D8DCE2] rounded-lg text-[11px] text-[#141619]"
-                        >
-                          {item.imageUrl ? (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.name}
-                              referrerPolicy="no-referrer"
-                              className="w-5 h-6 object-cover rounded shrink-0 bg-white"
-                            />
-                          ) : (
-                            <span
-                              aria-hidden="true"
-                              className="w-2.5 h-2.5 rounded-xs border border-black/15 shrink-0"
-                              style={{ backgroundColor: resolveKoreanColorHex(item.color) }}
-                            />
-                          )}
-                          <span className="font-medium truncate max-w-[150px]">{item.name}</span>
-                          <span className="text-[#6B7280]">{item.color}</span>
-                        </div>
-                      ))}
-                      {msgContextLabels.map((label) => (
-                        <span
-                          key={label}
-                          className="inline-flex items-center px-2 py-1 bg-[#F5F6F7] border border-[#D8DCE2] rounded-lg text-[11px] font-medium text-[#1F3A5F]"
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                <div
-                  className={`max-w-[90%] rounded-lg px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
-                    msg.role === 'user'
-                      ? 'bg-[#1F3A5F] text-white'
-                      : 'bg-[#F5F6F7] text-[#141619] border border-[#E5E7EB]'
-                  }`}
-                >
-                  {msg.content}
-                </div>
-                {msg.role === 'assistant' && msg.representativeOutfit && (
-                  <div className="mt-2.5 max-w-[290px] sm:max-w-[320px] w-full bg-[#FAFBFB] border border-[#E5E7EB] rounded-xl overflow-hidden">
-                    <div className="px-3.5 py-2.5 border-b border-[#ECEDF0] bg-white">
-                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#1F3A5F]">
-                        <Camera className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                        <span>대표 추천 코디 미리보기 · 얼굴 제외 실사</span>
-                      </div>
-                      <p className="text-xs font-semibold text-[#141619] mt-0.5 leading-snug">
-                        {msg.representativeOutfit.title}
-                      </p>
-                    </div>
-
-                    {msg.representativeOutfit.imageUrl ? (
-                      <div className="aspect-[3/4] w-full bg-[#F4F5F7] overflow-hidden">
-                        <img
-                          src={msg.representativeOutfit.imageUrl}
-                          alt={`${msg.representativeOutfit.title} 대표 추천 코디 실사 이미지`}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover object-top"
-                        />
-                      </div>
-                    ) : msg.representativeOutfit.imageError ? (
-                      <p
-                        role="alert"
-                        className="px-3.5 py-2.5 text-[11px] text-[#B91C1C] bg-[#FEF2F2] leading-relaxed"
-                      >
-                        대표 코디 이미지 생성 실패: {msg.representativeOutfit.imageError}
-                      </p>
-                    ) : null}
-
-                    <div className="px-3.5 py-2.5 space-y-1.5">
-                      {msg.representativeOutfit.stylingNote && (
-                        <p className="text-xs text-[#141619] leading-snug">
-                          {msg.representativeOutfit.stylingNote}
-                        </p>
-                      )}
-                      <div className="flex flex-wrap gap-1">
-                        {msg.representativeOutfit.itemIds
-                          .map((id) => ownedMap.get(id))
-                          .filter((item): item is WardrobeItem => Boolean(item))
-                          .map((item) => (
-                            <span
-                              key={item.id}
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-white border border-[#E5E7EB] rounded text-[10px] text-[#374151]"
-                            >
-                              {item.name}
-                            </span>
-                          ))}
-                      </div>
-                      <p className="text-[10px] text-[#6B7280] leading-snug">
-                        보유 의류 사진·메타데이터 기반 실사 코디 참고 이미지(얼굴 제외)
-                      </p>
-                    </div>
+              <article className={`chat-message ${user ? 'user-message' : 'assistant-message'}`} key={message.id}>
+                <header className="flex flex-wrap items-baseline gap-x-3 text-xs font-semibold">
+                  <span>{user ? '나' : '스타일 어시스턴트'}</span>
+                  <time className="font-normal opacity-90">{message.timestamp}</time>
+                </header>
+                {attached.length > 0 && <p className="mt-1 text-xs leading-relaxed">첨부 · {attached.join(' · ')}</p>}
+                <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed">{message.content}</p>
+                {representative && (
+                  <div className="mt-4 space-y-3 border-t border-line pt-3">
+                    <h3 className="font-semibold">{representative.title}</h3>
+                    {representative.imageUrl && <figure className="max-w-[250px]">
+                      <GarmentImage src={representative.imageUrl} alt={`${representative.title} 착장`} className="generated-look" />
+                      <figcaption className="mt-1 text-xs font-medium text-olive-deep">AI가 생성한 착장 이미지</figcaption>
+                    </figure>}
+                    {representative.imageError && <p className="form-status" role="alert">{representative.imageError}</p>}
+                    {representative.stylingNote && <p className="text-sm leading-relaxed text-muted">{representative.stylingNote}</p>}
+                    {outfitItems.length > 0 && <div className="space-y-2">
+                      <p className="text-xs font-semibold text-muted">내 옷장 사진</p>
+                      <ItemStrip items={outfitItems} onOpenItem={onOpenItem} />
+                    </div>}
                   </div>
                 )}
-
-                {citedItems.length > 0 && (
-                  <div className="mt-1.5 text-[11px] text-[#525866] max-w-[90%]">
-                    <span className="font-semibold text-[#141619]">참조한 보유 의류:</span>{' '}
-                    {citedItems.map((item) => `${item.name}(${item.color})`).join(' · ')}
-                  </div>
-                )}
-              </div>
+                {citedItems.length > 0 && <div className="mt-4 space-y-2">
+                  <p className="text-xs font-semibold text-muted">답변에서 언급한 의류</p>
+                  <ItemStrip items={citedItems} onOpenItem={onOpenItem} />
+                </div>}
+              </article>
             );
           })}
-
           {isSending && (
-            <div className="flex flex-col items-start">
-              <div className="text-[11px] text-[#6B7280] mb-1">나만의 옷장 어시스턴트</div>
-              <div className="bg-[#F5F6F7] border border-[#E5E7EB] rounded-lg px-4 py-3 text-xs text-[#525866] animate-pulse">
-                핵심 답변과 대표 코디 미리보기 이미지를 준비하고 있습니다...
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Suggested Prompts */}
-        <div className="pt-3 pb-4 border-t border-[#ECEDF0] space-y-2">
-          <span className="block text-[11px] font-medium text-[#525866]">추천 질문</span>
-          <div className="flex flex-wrap gap-2">
-            {QUICK_CHAT_PROMPTS.map((q) => (
-              <button
-                key={q}
-                type="button"
-                disabled={isSending}
-                onClick={() => {
-                  setInputError(null);
-                  dispatchMessage(q);
-                }}
-                className="text-left px-3 py-1.5 text-xs text-[#374151] border border-[#D8DCE2] hover:border-[#1F3A5F] hover:text-[#1F3A5F] disabled:opacity-40 rounded-lg transition-colors cursor-pointer"
-              >
-                {q}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Expandable Closet Data Attachment Picker */}
-        {isPickerOpen && (
-          <div
-            id="closet-attachment-picker"
-            className="mb-3 p-4 bg-[#FAFBFB] border border-[#D8DCE2] rounded-xl space-y-4"
-          >
-            <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-[#ECEDF0]">
-              <div>
-                <h3 className="text-xs font-semibold text-[#141619]">
-                  내 옷장 데이터 첨부 ({totalAttachmentCount}건 선택됨)
-                </h3>
-                <p className="text-[11px] text-[#525866] mt-0.5">
-                  특정 의류(사진·메타데이터 포함)나 옷장 요약·코디·구매 후보를 질문에 직접 첨부하세요.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsPickerOpen(false)}
-                aria-label="옷장 첨부 패널 닫기"
-                className="p-1 text-[#525866] hover:text-[#141619] rounded cursor-pointer"
-              >
-                <X className="w-4 h-4" aria-hidden="true" />
-              </button>
-            </div>
-
-            {/* Context Data Blocks */}
-            <div className="space-y-1.5">
-              <p className="text-[11px] font-semibold text-[#141619]">옷장 요약 · 코디 · 구매 후보</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAttachments((prev) => ({
-                      ...prev,
-                      includeClosetSummary: !prev.includeClosetSummary,
-                    }))
-                  }
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors cursor-pointer ${
-                    attachments.includeClosetSummary
-                      ? 'bg-[#1F3A5F] text-white border-[#1F3A5F]'
-                      : 'bg-white text-[#374151] border-[#D8DCE2] hover:border-[#1F3A5F]'
-                  }`}
-                >
-                  {attachments.includeClosetSummary && <Check className="w-3 h-3" aria-hidden="true" />}
-                  옷장 전체 요약 ({ownedItems.length}벌)
-                </button>
-
-                {purchaseCandidate.name.trim() && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAttachments((prev) => ({
-                        ...prev,
-                        includePurchaseCandidate: !prev.includePurchaseCandidate,
-                      }))
-                    }
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors cursor-pointer ${
-                      attachments.includePurchaseCandidate
-                        ? 'bg-[#1F3A5F] text-white border-[#1F3A5F]'
-                        : 'bg-white text-[#374151] border-[#D8DCE2] hover:border-[#1F3A5F]'
-                    }`}
-                  >
-                    {attachments.includePurchaseCandidate && (
-                      <Check className="w-3 h-3" aria-hidden="true" />
-                    )}
-                    구매 후보: {purchaseCandidate.name}
-                  </button>
-                )}
-
-                {outfits.map((outfit) => {
-                  const selected = activeOutfitIds.includes(outfit.id);
-                  return (
-                    <button
-                      key={outfit.id}
-                      type="button"
-                      onClick={() => toggleOutfitAttachment(outfit.id)}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors cursor-pointer ${
-                        selected
-                          ? 'bg-[#1F3A5F] text-white border-[#1F3A5F]'
-                          : 'bg-white text-[#374151] border-[#D8DCE2] hover:border-[#1F3A5F]'
-                      }`}
-                    >
-                      {selected && <Check className="w-3 h-3" aria-hidden="true" />}
-                      코디: {outfit.title}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Individual Owned Garment Picker */}
-            <div className="space-y-2.5 pt-2 border-t border-[#ECEDF0]">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <p className="text-[11px] font-semibold text-[#141619]">
-                  보유 의류 선택 ({activeItemIds.length}벌 선택됨)
-                </p>
-                <div className="relative">
-                  <Search
-                    className="w-3.5 h-3.5 text-[#6B7280] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
-                    aria-hidden="true"
-                  />
-                  <label htmlFor="chat-attachment-search" className="sr-only">
-                    첨부할 보유 의류 검색
-                  </label>
-                  <input
-                    id="chat-attachment-search"
-                    type="search"
-                    value={pickerSearch}
-                    onChange={(e) => setPickerSearch(e.target.value)}
-                    placeholder="의류 이름·색상·소재 검색"
-                    className="pl-8 pr-2.5 py-1 text-xs border border-[#D8DCE2] rounded-lg bg-white text-[#141619] focus:border-[#1F3A5F] focus:outline-none w-full sm:w-52"
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-1.5">
-                {(['전체', ...CLOTHING_CATEGORIES] as const).map((cat) => (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setPickerCategory(cat)}
-                    className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors cursor-pointer ${
-                      pickerCategory === cat
-                        ? 'bg-[#141619] text-white border-[#141619]'
-                        : 'bg-white text-[#525866] border-[#E5E7EB] hover:text-[#141619]'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-
-              {filteredPickerItems.length === 0 ? (
-                <p className="text-xs text-[#6B7280] py-4 text-center">
-                  조건에 맞는 보유 의류가 없습니다.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
-                  {filteredPickerItems.map((item) => {
-                    const selected = activeItemIds.includes(item.id);
-                    const meta = formatVisualMetadataSummary(item.visualMeta);
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => toggleItemAttachment(item.id)}
-                        aria-pressed={selected}
-                        className={`flex items-center justify-between gap-2 p-2 rounded-lg border text-left transition-colors cursor-pointer ${
-                          selected
-                            ? 'bg-[#F0F4F8] border-[#1F3A5F]'
-                            : 'bg-white border-[#E5E7EB] hover:border-[#9CA3AF]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          {item.imageUrl ? (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.name}
-                              referrerPolicy="no-referrer"
-                              className="w-9 h-11 object-cover rounded border border-[#E5E7EB] shrink-0 bg-white"
-                            />
-                          ) : (
-                            <span
-                              aria-hidden="true"
-                              className="w-4 h-4 rounded-xs border border-black/15 shrink-0"
-                              style={{ backgroundColor: resolveKoreanColorHex(item.color) }}
-                            />
-                          )}
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-[#141619] truncate">
-                              {item.name}
-                            </p>
-                            <p className="text-[11px] text-[#525866] truncate">
-                              {item.category} · {item.color} · {item.fit}
-                            </p>
-                            {meta && (
-                              <p className="text-[10px] text-[#1F3A5F] truncate">{meta}</p>
-                            )}
-                          </div>
-                        </div>
-                        <span
-                          className={`inline-flex items-center justify-center w-5 h-5 rounded border shrink-0 ${
-                            selected
-                              ? 'bg-[#1F3A5F] border-[#1F3A5F] text-white'
-                              : 'border-[#D1D5DB] text-transparent'
-                          }`}
-                          aria-hidden="true"
-                        >
-                          <Check className="w-3 h-3" />
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Active Attachments Draft Strip */}
-        {totalAttachmentCount > 0 && (
-          <div
-            aria-label="전송할 첨부 옷장 데이터"
-            className="mb-2.5 p-2.5 bg-[#F8FAFC] border border-[#E2E8F0] rounded-lg space-y-2"
-          >
-            <div className="flex items-center justify-between gap-2 text-[11px]">
-              <span className="font-semibold text-[#1F3A5F]">
-                이번 질문에 첨부된 옷장 데이터 ({totalAttachmentCount}건)
-              </span>
-              <button
-                type="button"
-                onClick={() => setAttachments(EMPTY_ATTACHMENTS)}
-                className="text-[#525866] hover:text-[#141619] cursor-pointer"
-              >
-                첨부 비우기
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {attachedItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 bg-white border border-[#D8DCE2] rounded-lg text-xs text-[#141619]"
-                >
-                  {item.imageUrl ? (
-                    <img
-                      src={item.imageUrl}
-                      alt={item.name}
-                      referrerPolicy="no-referrer"
-                      className="w-4 h-5 object-cover rounded shrink-0"
-                    />
-                  ) : (
-                    <span
-                      aria-hidden="true"
-                      className="w-2.5 h-2.5 rounded-xs border border-black/15 shrink-0"
-                      style={{ backgroundColor: resolveKoreanColorHex(item.color) }}
-                    />
-                  )}
-                  <span className="font-medium truncate max-w-[140px]">{item.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleItemAttachment(item.id)}
-                    aria-label={`'${item.name}' 첨부 해제`}
-                    className="text-[#6B7280] hover:text-[#141619] cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" aria-hidden="true" />
-                  </button>
-                </div>
-              ))}
-
-              {attachments.includeClosetSummary && (
-                <div className="inline-flex items-center gap-1.5 px-2 py-1 bg-white border border-[#D8DCE2] rounded-lg text-xs text-[#1F3A5F] font-medium">
-                  <span>옷장 전체 요약 ({ownedItems.length}벌)</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAttachments((prev) => ({ ...prev, includeClosetSummary: false }))
-                    }
-                    aria-label="옷장 전체 요약 첨부 해제"
-                    className="text-[#6B7280] hover:text-[#141619] cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" aria-hidden="true" />
-                  </button>
-                </div>
-              )}
-
-              {attachments.includePurchaseCandidate && purchaseCandidate.name.trim() && (
-                <div className="inline-flex items-center gap-1.5 px-2 py-1 bg-white border border-[#D8DCE2] rounded-lg text-xs text-[#1F3A5F] font-medium">
-                  <span>구매 후보: {purchaseCandidate.name}</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAttachments((prev) => ({ ...prev, includePurchaseCandidate: false }))
-                    }
-                    aria-label="구매 후보 첨부 해제"
-                    className="text-[#6B7280] hover:text-[#141619] cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" aria-hidden="true" />
-                  </button>
-                </div>
-              )}
-
-              {activeOutfitIds.map((outfitId) => {
-                const outfit = outfitMap.get(outfitId);
-                if (!outfit) return null;
-                return (
-                  <div
-                    key={outfit.id}
-                    className="inline-flex items-center gap-1.5 px-2 py-1 bg-white border border-[#D8DCE2] rounded-lg text-xs text-[#1F3A5F] font-medium"
-                  >
-                    <span>코디: {outfit.title}</span>
-                    <button
-                      type="button"
-                      onClick={() => toggleOutfitAttachment(outfit.id)}
-                      aria-label={`'${outfit.title}' 코디 첨부 해제`}
-                      className="text-[#6B7280] hover:text-[#141619] cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" aria-hidden="true" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <p role="alert" className="text-xs text-[#B91C1C] pb-2">
-            상담 오류: {error}
-          </p>
-        )}
-        {inputError && (
-          <p role="alert" className="text-xs text-[#B91C1C] pb-2">
-            {inputError}
-          </p>
-        )}
-
-        {/* Composer */}
-        <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
-          <div className="flex items-center gap-2 flex-1">
-            <button
-              type="button"
-              onClick={() => setIsPickerOpen((prev) => !prev)}
-              aria-expanded={isPickerOpen}
-              aria-controls="closet-attachment-picker"
-              disabled={isSending}
-              className={`inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                isPickerOpen || totalAttachmentCount > 0
-                  ? 'border-[#1F3A5F] text-[#1F3A5F] bg-[#F0F4F8]'
-                  : 'border-[#D8DCE2] text-[#374151] bg-white hover:border-[#1F3A5F]'
-              }`}
-            >
-              <Paperclip className="w-3.5 h-3.5" aria-hidden="true" />
-              내 옷장 첨부{totalAttachmentCount > 0 ? ` (${totalAttachmentCount})` : ''}
-            </button>
-
-            <label htmlFor="assistant-chat-input" className="sr-only">
-              패션 어시스턴트에게 질문 입력
-            </label>
-            <input
-              id="assistant-chat-input"
-              type="text"
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                if (inputError) setInputError(null);
-              }}
-              disabled={isSending}
-              placeholder="예: 첨부한 옷 두 벌로 출근룩 조합이 어울릴까요?"
-              className="flex-1 min-w-0 px-3.5 py-2.5 text-sm border border-[#D8DCE2] rounded-lg bg-white text-[#141619] focus:border-[#1F3A5F] focus:outline-none"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={isSending}
-            aria-label="질문 보내기"
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-[#1F3A5F] hover:bg-[#172C49] disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Send className="w-4 h-4" aria-hidden="true" />
-            전송
-          </button>
-        </form>
-      </section>
-
-      {/* Connected Wardrobe Context Sidebar */}
-      <aside
-        aria-label="연동된 옷장 데이터 요약"
-        className="lg:col-span-4 bg-white border border-[#E5E7EB] rounded-xl p-5 space-y-5"
-      >
-        <div className="pb-3 border-b border-[#ECEDF0] flex items-start justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-semibold text-[#141619]">어시스턴트 연동 컨텍스트</h3>
-            <p className="text-xs text-[#525866] mt-0.5">
-              항목을 눌러 질문에 바로 첨부할 수 있습니다.
+            <p className="form-status flex items-center gap-2">
+              <LoaderCircle size={17} className="animate-spin shrink-0" aria-hidden="true" /> 내 옷장을 참고해 답변을 준비하는 중이에요.
             </p>
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              setAttachments((prev) => ({
-                ...prev,
-                includeClosetSummary: !prev.includeClosetSummary,
-              }))
-            }
-            className={`px-2 py-1 text-[11px] font-medium rounded border shrink-0 cursor-pointer ${
-              attachments.includeClosetSummary
-                ? 'bg-[#1F3A5F] text-white border-[#1F3A5F]'
-                : 'border-[#D8DCE2] text-[#1F3A5F] hover:bg-[#F5F6F7]'
-            }`}
-          >
-            {attachments.includeClosetSummary ? '요약 첨부됨' : '+ 요약 첨부'}
-          </button>
+          )}
         </div>
-
-        <div className="space-y-2 text-xs">
-          <h4 className="font-semibold text-[#141619]">현재 스타일 선호도</h4>
-          <p className="text-[#525866] leading-relaxed">
-            {preferences.occasion} · {preferences.season} · {preferences.preferredStyle}
-          </p>
-        </div>
-
-        <div className="pt-3 border-t border-[#ECEDF0] space-y-2 text-xs">
-          <div className="flex items-center justify-between gap-2">
-            <h4 className="font-semibold text-[#141619]">검토 중인 구매 후보</h4>
-            {purchaseCandidate.name.trim() && (
-              <button
-                type="button"
-                onClick={() =>
-                  setAttachments((prev) => ({
-                    ...prev,
-                    includePurchaseCandidate: !prev.includePurchaseCandidate,
-                  }))
-                }
-                className={`px-2 py-0.5 text-[11px] font-medium rounded border cursor-pointer ${
-                  attachments.includePurchaseCandidate
-                    ? 'bg-[#1F3A5F] text-white border-[#1F3A5F]'
-                    : 'border-[#D8DCE2] text-[#525866] hover:text-[#141619]'
-                }`}
-              >
-                {attachments.includePurchaseCandidate ? '첨부됨' : '+ 첨부'}
+        <div className="chat-compose">
+          {messages.length === 1 && <div className="flex flex-wrap gap-1.5" role="group" aria-label="추천 질문">
+            {QUICK_CHAT_PROMPTS.map(({ label, prompt }) => (
+              <button className="chat-suggestion" key={prompt} type="button" disabled={isSending} onClick={() => send(prompt)}>{label}</button>
+            ))}
+          </div>}
+          {error && <div>
+            <p role="alert" className="form-status">{error}</p>
+            {onRetry && <button type="button" className="text-action" onClick={onRetry}>답변 다시 요청</button>}
+          </div>}
+          {attachmentLabels.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-3">
+              <p className="text-sm text-muted break-words">첨부 · {attachmentLabels.join(' · ')}</p>
+              <button type="button" className="text-action" onClick={() => setAttachments(EMPTY_ATTACHMENTS)}>첨부 비우기</button>
+            </div>
+          )}
+          <form onSubmit={(event) => { event.preventDefault(); send(input); }} className="space-y-2">
+            <label className="block">
+              <span className="sr-only">스타일 질문</span>
+              <textarea ref={composer} className="field-input resize-y" rows={2} placeholder="예를 들어 이번 주말에 뭘 입으면 좋을까요?" value={input} onChange={(event) => setInput(event.target.value)} />
+            </label>
+            <div className="flex items-center justify-between gap-2">
+              <button type="button" className="action action-outline" onClick={() => setPickerOpen(true)} disabled={isSending}>
+                <Paperclip size={16} aria-hidden="true" /> 내 옷장 첨부{attachmentLabels.length > 0 ? ` (${attachmentLabels.length})` : ''}
               </button>
-            )}
-          </div>
-          <p className="text-[#525866]">
-            {purchaseCandidate.name
-              ? `${purchaseCandidate.name} (${purchaseCandidate.category} · ${purchaseCandidate.color})`
-              : '입력된 구매 후보 없음'}
-          </p>
+              <button className="action action-primary" type="submit" disabled={isSending || !input.trim()}>
+                <Send size={16} aria-hidden="true" /> 보내기
+              </button>
+            </div>
+          </form>
         </div>
-
-        <div className="pt-3 border-t border-[#ECEDF0] space-y-2 text-xs">
-          <h4 className="font-semibold text-[#141619]">
-            생성된 추천 코디 ({outfits.length}건)
-          </h4>
-          {outfits.length === 0 ? (
-            <p className="text-[#6B7280]">아직 생성된 코디가 없습니다.</p>
-          ) : (
-            <ul className="space-y-1.5 text-[#525866]">
-              {outfits.map((o, idx) => {
-                const selected = activeOutfitIds.includes(o.id);
-                return (
-                  <li key={o.id} className="flex items-center justify-between gap-2">
-                    <span className="truncate">
-                      0{idx + 1}. {o.title}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => toggleOutfitAttachment(o.id)}
-                      aria-label={`'${o.title}' 코디 ${selected ? '첨부 해제' : '질문에 첨부'}`}
-                      className={`px-2 py-0.5 text-[11px] font-medium rounded border shrink-0 cursor-pointer ${
-                        selected
-                          ? 'bg-[#1F3A5F] text-white border-[#1F3A5F]'
-                          : 'border-[#D8DCE2] text-[#525866] hover:text-[#141619]'
-                      }`}
-                    >
-                      {selected ? '첨부됨' : '+ 첨부'}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        <div className="pt-3 border-t border-[#ECEDF0] space-y-2 text-xs">
-          <h4 className="font-semibold text-[#141619]">
-            보유 의류 목록 ({ownedItems.length}벌)
-          </h4>
-          {ownedItems.length === 0 ? (
-            <p className="text-[#6B7280]">등록된 의류가 없습니다.</p>
-          ) : (
-            <ul className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-              {ownedItems.map((item) => {
-                const selected = activeItemIds.includes(item.id);
-                return (
-                  <li key={item.id} className="flex items-center justify-between gap-2 text-[#374151]">
-                    <span className="inline-flex items-center gap-1.5 min-w-0">
-                      {item.imageUrl ? (
-                        <img
-                          src={item.imageUrl}
-                          alt={item.name}
-                          referrerPolicy="no-referrer"
-                          className="w-5 h-6 object-cover rounded border border-[#E5E7EB] shrink-0 bg-white"
-                        />
-                      ) : (
-                        <span
-                          aria-hidden="true"
-                          className="w-2.5 h-2.5 rounded-xs border border-black/15 shrink-0"
-                          style={{ backgroundColor: resolveKoreanColorHex(item.color) }}
-                        />
-                      )}
-                      <span className="truncate">{item.name}</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => toggleItemAttachment(item.id)}
-                      aria-label={`'${item.name}' ${selected ? '첨부 해제' : '질문에 첨부'}`}
-                      className={`inline-flex items-center gap-0.5 px-2 py-0.5 text-[11px] font-medium rounded border shrink-0 cursor-pointer ${
-                        selected
-                          ? 'bg-[#1F3A5F] text-white border-[#1F3A5F]'
-                          : 'border-[#D8DCE2] text-[#525866] hover:text-[#141619]'
-                      }`}
-                    >
-                      {selected ? (
-                        <>
-                          <Check className="w-3 h-3" aria-hidden="true" />
-                          첨부됨
-                        </>
-                      ) : (
-                        <>
-                          <Plus className="w-3 h-3" aria-hidden="true" />
-                          첨부
-                        </>
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+      </section>
+      <aside className="assistant-context">
+        <h2 className="mb-3 font-semibold">상담에 참고하는 내 옷장</h2>
+        <dl className="detail-fields">
+          <div><dt>보유 의류</dt><dd>{ownedItems.length}개</dd></div>
+          <div><dt>입을 상황</dt><dd>{preferences.occasion}</dd></div>
+          <div><dt>계절</dt><dd>{preferences.season}</dd></div>
+          <div><dt>선호 스타일</dt><dd>{preferences.preferredStyle}</dd></div>
+          {purchaseCandidate.name.trim() && <div><dt>구매 후보</dt><dd>{purchaseCandidate.name}</dd></div>}
+        </dl>
       </aside>
+
+      {pickerOpen && (
+        <AttachmentPicker items={ownedItems} outfits={outfits} candidate={purchaseCandidate} initial={selection} onClose={() => setPickerOpen(false)}
+          onApply={(next) => { setAttachments(next); setPickerOpen(false); requestAnimationFrame(() => composer.current?.focus()); }} />
+      )}
     </div>
   );
-};
+}
+
+function AttachmentPicker({
+  items, outfits, candidate, initial, onClose, onApply,
+}: {
+  items: WardrobeItem[]; outfits: OutfitRecommendation[]; candidate: PurchaseCandidate; initial: ChatAttachmentSelection;
+  onClose: () => void; onApply: (selection: ChatAttachmentSelection) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('');
+  const [selected, setSelected] = useState(initial);
+  const needle = query.trim().toLocaleLowerCase('ko');
+  const filtered = items.filter((item) => (!category || category === item.category) &&
+    [item.name, item.color, item.category, item.visualMeta?.material].some((part) => part?.toLocaleLowerCase('ko').includes(needle)));
+  const toggle = (field: 'itemIds' | 'outfitIds', id: string) => setSelected((current) => ({
+    ...current, [field]: current[field].includes(id) ? current[field].filter((value) => value !== id) : [...current[field], id],
+  }));
+
+  return (
+    <Modal title="내 옷장 첨부" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="flex flex-wrap gap-x-4">
+          <label className="check-row"><input type="checkbox" checked={selected.includeClosetSummary} onChange={(event) => setSelected({ ...selected, includeClosetSummary: event.target.checked })} /> 옷장 요약</label>
+          {candidate.name.trim() && <label className="check-row">
+            <input type="checkbox" checked={selected.includePurchaseCandidate} onChange={(event) => setSelected({ ...selected, includePurchaseCandidate: event.target.checked })} /> 구매 후보 · {candidate.name}
+          </label>}
+        </div>
+        {outfits.length > 0 && <fieldset>
+          <legend className="font-semibold">코디</legend>
+          {outfits.map((outfit) => (
+            <label key={outfit.id} className="check-row"><input type="checkbox" checked={selected.outfitIds.includes(outfit.id)} onChange={() => toggle('outfitIds', outfit.id)} /> {outfit.title}</label>
+          ))}
+        </fieldset>}
+        <fieldset className="space-y-2">
+          <legend className="font-semibold">의류</legend>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <label><span className="field-label">카테고리</span>
+              <select className="field-input" value={category} onChange={(event) => setCategory(event.target.value)}>
+                <option value="">전체</option>
+                {CLOTHING_CATEGORIES.map((value) => <option key={value}>{value}</option>)}
+              </select>
+            </label>
+            <label><span className="field-label">의류 검색</span>
+              <input type="search" className="field-input" value={query} onChange={(event) => setQuery(event.target.value)} />
+            </label>
+          </div>
+          {filtered.length > 0 ? <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {filtered.map((item) => (
+              <label key={item.id} className="check-row border border-line px-2 py-1">
+                <input type="checkbox" checked={selected.itemIds.includes(item.id)} onChange={() => toggle('itemIds', item.id)} />
+                <GarmentImage src={item.imageUrl} alt="" className="w-10 shrink-0" />
+                <span>{item.name}</span>
+              </label>
+            ))}
+          </div> : <p className="text-sm text-muted">검색 조건에 맞는 의류가 없어요.</p>}
+        </fieldset>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="action action-outline" onClick={onClose}>취소</button>
+          <button type="button" className="action action-primary" onClick={() => onApply(selected)}>선택 반영</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
